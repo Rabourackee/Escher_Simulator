@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relativity — an endless Escher space</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23ece3cf'/%3E%3Cpath d='M5 27h6v-5h5v-5h5v-5h5V6' fill='none' stroke='%231f1813' stroke-width='2.4'/%3E%3C/svg%3E">
+  <meta name="description" content="Walk through an endless, procedurally drawn space after M. C. Escher's Relativity, where the ground beneath your feet decides which way is down.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <div id="plate" aria-hidden="true"></div>
+
+  <section id="intro" class="panel">
+    <h1>Relativity</h1>
+    <p class="sub">an endless space after the lithograph by M.&nbsp;C.&nbsp;Escher, 1953</p>
+    <p class="hint">Choose an inhabitant — <em>click a figure</em> to step into its world</p>
+  </section>
+
+  <div id="label" aria-live="polite"></div>
+
+  <section id="hud" class="hidden">
+    <div id="gravity"><span class="arrow">▼</span><span id="gname"></span></div>
+    <div id="keys">W A S D walk · mouse look · Shift run · walk into a wall or over an edge to change gravity · Esc pause</div>
+  </section>
+
+  <section id="pause" class="panel hidden">
+    <h2>Paused</h2>
+    <p><button id="resume">Resume walking</button></p>
+    <p><button id="toPrint">Return to the print</button></p>
+    <p class="small">Every hall beyond the first is drawn the moment you approach it.</p>
+  </section>
+
+  <div id="loading">drawing the plate…</div>
+  <noscript>This piece needs JavaScript and WebGL 2.</noscript>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
