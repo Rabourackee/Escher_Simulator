@@ -120,6 +120,14 @@ export function tryCommit(ctx, P) {
 
   for (let j = 0; j < tcells.length; j += 2) grid[tcells[j]] = tcells[j + 1];
   for (const k of tclear) reserve[k] = 1;
+  if (ctx.debugBoxes && tcells.length) {
+    const lo = [HALL, HALL, HALL], hi = [0, 0, 0];
+    for (let j = 0; j < tcells.length; j += 2) {
+      const k = tcells[j], c = [k % HALL, Math.floor(k / HALL) % HALL, Math.floor(k / (HALL * HALL))];
+      for (let a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], c[a]); hi[a] = Math.max(hi[a], c[a] + 1); }
+    }
+    ctx.debugBoxes.push({ name: P.name, box: [...lo, ...hi] });
+  }
 
   if (P.geom && ctx.sink) {
     const H = hallMatrix(ctx.hx, ctx.hy, ctx.hz, m);
@@ -142,6 +150,13 @@ export function tryCommit(ctx, P) {
   }
   for (const f of P.figures) {
     ctx.figures.push({ ...f, pos: toWorld(f.pos), up: rotDir(m, f.up), face: rotDir(m, f.face) });
+  }
+  if (P.meta && ctx.placed) {
+    // remember where solid things went (hall-local box), so others can be built against them
+    const [x0, y0, z0, x1, y1, z1] = P.meta.box;
+    const a = xfVoxel(m, x0, y0, z0), b = xfVoxel(m, x1 - 1, y1 - 1, z1 - 1);
+    const box = [0, 1, 2].map((k) => Math.min(a[k], b[k])).concat([0, 1, 2].map((k) => Math.max(a[k], b[k]) + 1));
+    ctx.placed.push({ ...P.meta, name: P.name, box, up: rotDir(m, 2) });
   }
   ctx.features.push(P.name);
   return true;

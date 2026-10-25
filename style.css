@@ -30,17 +30,15 @@ html, body {
 body.walking #view { cursor: none; }
 body.hovering #view { cursor: pointer; }
 
-/* The print's plate mark: a double rule inset from the edges, visible on the title view. */
+/* A fine double rule around the print on the title page (positioned from script). */
 #plate {
   position: fixed;
-  inset: 18px;
-  border: 1px solid rgba(31, 24, 19, 0.55);
-  outline: 1px solid rgba(31, 24, 19, 0.25);
-  outline-offset: 5px;
+  box-sizing: border-box;
+  border: 1px solid rgba(31, 24, 19, 0.28);
+  outline: 1px solid rgba(31, 24, 19, 0.12);
+  outline-offset: 6px;
   pointer-events: none;
-  transition: opacity 1.4s ease;
 }
-body:not(.intro) #plate { opacity: 0; }
 
 .panel {
   position: fixed;
@@ -51,12 +49,10 @@ body:not(.intro) #plate { opacity: 0; }
   transition: opacity 0.9s ease;
 }
 
+/* The caption under the print, like the label beside a framed etching. */
 #intro {
-  bottom: 30px;
   width: min(92vw, 640px);
-  padding: 10px 20px 10px;
-  background: rgba(236, 227, 207, 0.9);
-  box-shadow: 0 0 0 1px rgba(31, 24, 19, 0.35);
+  padding: 2px 12px 6px;
 }
 #intro h1 {
   font-family: var(--font-sc);
@@ -158,10 +154,10 @@ body:not(.intro) #plate { opacity: 0; }
 
 .hidden { opacity: 0 !important; pointer-events: none !important; }
 body.shot .panel, body.shot #hud, body.shot #loading, body.shot #label { display: none; }
+body.frame .panel, body.frame #plate, body.frame #loading, body.frame #label { display: none; }
 
 @media (max-width: 640px) {
-  #plate { inset: 8px; }
-  #intro { bottom: 20px; padding: 10px 14px; }
+  #intro { padding: 0 8px; }
   #intro .hint { font-size: 15px; }
   #keys { font-size: 12px; padding: 0 16px; }
 }

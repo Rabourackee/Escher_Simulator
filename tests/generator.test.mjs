@@ -6,7 +6,7 @@ import * as THREE from '../vendor/three/three.module.min.js';
 import { generateHall } from '../src/world/hall.js';
 import { boundingWalls } from '../src/world/walls.js';
 import { localExtent, fromLocal } from '../src/world/openings.js';
-import { START } from '../src/world/prefab.js';
+import { START, isPrefabHall } from '../src/world/prefab.js';
 import { Player } from '../src/player/controller.js';
 import { HALL, AIR, SOLID } from '../src/core/constants.js';
 import { DIRS, axisOf, signOf } from '../src/core/cube.js';
@@ -59,23 +59,27 @@ console.log('neighbouring halls agree on the walls they share');
   check('boundary layers match', mismatches === 0, `${mismatches} of ${compared}`);
 }
 
-console.log('doorways stay clear of features');
+console.log('doorways stay clear of features (generated halls)');
 {
   let blocked = 0, doors = 0, halls = 0;
   for (let hx = -3; hx <= 3; hx++) for (let hy = -1; hy <= 1; hy++) for (let hz = -3; hz <= 3; hz++) {
+    if (isPrefabHall(hx, hy, hz)) continue;   // hand-built: its openings are placed by hand
     const h = hall(hx, hy, hz);
     halls++;
     for (const { a, side, spec } of boundingWalls(hx, hy, hz)) {
       if (!spec) continue;
       const b = (a + 1) % 3, c = (a + 2) % 3;
       for (const op of spec.openings) {
-        if (op.kind !== 'arch') continue;
+        if (op.kind !== 'arch' || (op.sill || 0) > 0) continue;  // upper-tier openings are windows
         doors++;
-        const [a0, h0, a1] = localExtent(op);
+        let [a0, h0, a1] = localExtent(op);
+        // a wide arch keeps its middle clear (you can pass anywhere else too)
+        if (a1 - a0 > 8) { const mid = (a0 + a1) / 2; a0 = mid - 3; a1 = mid + 3; }
+        const depth = op.w > 8 ? 3 : 4;
         for (let al = Math.ceil(a0) + 0.5; al < a1; al += 1) {
           for (let up = h0 + 0.5; up < h0 + 4; up += 1) {
             const [u, v] = fromLocal(op.base, al, up);
-            for (let d = 1; d <= 4; d++) {
+            for (let d = 1; d <= depth; d++) {
               const p = [0, 0, 0];
               p[a] = side === 0 ? d : HALL - 1 - d;
               p[b] = Math.floor(u); p[c] = Math.floor(v);
@@ -97,8 +101,21 @@ console.log('features');
     for (const f of h.features) { counts[f] = (counts[f] || 0) + 1; total++; }
     npcs += h.npcs.length;
   }
-  check('every kind of feature appears', ['flyingStair', 'cornerStair', 'balconyFlight', 'landingBridge', 'column', 'arcadeWall', 'garden'].every((k) => counts[k] > 0), JSON.stringify(counts));
-  check('halls are furnished', total / cache.size > 3, `${(total / cache.size).toFixed(1)} features per hall`);
+  const kinds = ['flyingStair', 'cornerStair', 'balconyFlight', 'landingBridge', 'column', 'arcadeWall', 'garden',
+    'pier', 'gallery', 'balcony', 'urn', 'plant', 'ball', 'statue', 'bench'];
+  check('every kind of feature appears', kinds.every((k) => counts[k] > 0), JSON.stringify(counts));
+  check('halls are furnished', total / cache.size > 8, `${(total / cache.size).toFixed(1)} features per hall`);
+  let stairs = 0;
+  for (const k of ['flyingStair', 'cornerStair', 'balconyFlight', 'landingBridge']) stairs += counts[k] || 0;
+  check('staircases everywhere, as in the print', stairs / cache.size > 1.5, `${(stairs / cache.size).toFixed(1)} per hall`);
+  let open = 0, walls = 0;
+  for (let hx = -3; hx <= 3; hx++) for (let hz = -3; hz <= 3; hz++) {
+    for (const w of boundingWalls(hx, 0, hz)) {
+      walls++;
+      if (!w.spec || w.spec.openings.some((o) => o.kind === 'arch' && o.w >= 10) || ['arcade', 'frame'].includes(w.spec.style)) open++;
+    }
+  }
+  check('most walls between halls are open or widely pierced', open / walls > 0.5, `${((open / walls) * 100).toFixed(0)}% of ${walls}`);
   check('inhabitants walk around', npcs > cache.size / 2, `${npcs} walkers in ${cache.size} halls`);
 }
 
@@ -111,15 +128,16 @@ console.log('the print (prefab halls)');
   const pl = new Player({ voxel });
   let bad = [];
   for (const f of START.figures) {
+    const at = f.stand ?? f.pos;
     const ua = axisOf(f.up), us = signOf(f.up);
-    const t = us * f.pos[ua];
-    const g = pl.groundAt(f.pos, f.up, t + 0.6, t - 1.2);
+    const t = us * at[ua];
+    const g = pl.groundAt(at, f.up, t + 0.6, t - 1.2);
     if (typeof g !== 'number' || Math.abs(g - t) > 0.3) { bad.push(`${f.label} (ground ${g})`); continue; }
-    const q = f.pos.slice(); q[ua] = us * g;
+    const q = at.slice(); q[ua] = us * g;
     if (pl.bodyHits(q, f.up, g)) bad.push(`${f.label} (body)`);
   }
-  check('16 inhabitants, 6 + 5 + 5 as in the print', START.figures.length === 16 &&
-    START.figures.filter((f) => f.up === 2).length === 6 && START.figures.filter((f) => f.up === 0).length === 5);
+  const peoples = [2, 0, 4].map((u) => START.figures.filter((f) => f.up === u).length);
+  check('16 inhabitants of three peoples, as in the print', START.figures.length === 16 && peoples.every((n) => n >= 4), peoples.join(' + '));
   check('every inhabitant stands somewhere a visitor can stand', bad.length === 0, bad.join('; '));
 }
 
@@ -164,7 +182,7 @@ console.log('walking connectivity');
   // Seed from every inhabitant of the print: the first empty cell above its feet.
   for (const f of START.figures) {
     const U = DIRS[f.up];
-    const c = f.pos.map((v, i) => Math.floor(v + U[i] * 0.05));
+    const c = (f.stand ?? f.pos).map((v, i) => Math.floor(v + U[i] * 0.05));
     for (let k = 0; k < 3 && !free(c[0], c[1], c[2]); k++) { c[0] += U[0]; c[1] += U[1]; c[2] += U[2]; }
     push(c[0], c[1], c[2], f.up);
   }

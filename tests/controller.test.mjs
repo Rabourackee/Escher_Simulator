@@ -120,5 +120,72 @@ console.log('a slab two voxels thick can be walked all the way around');
   check('position stays finite', finite(p));
 }
 
+console.log('jumping off a ledge lands on the ground below, keeping gravity');
+{
+  // a raised platform (top at y = 6) for x < 10 above a floor at y = 0
+  const voxel = (x, y, z) => ((y < 0) || (y >= 4 && y < 6 && x < 10) ? SOLID : AIR);
+  const p = makePlayer(voxel, [8.5, 6, 0.5], PY, PX);
+  p.update(1 / 60, { fwd: 1, strafe: 0, run: false, jump: true });
+  check('leaves the ground', p.air === true);
+  let frames = 0;
+  while (p.air && frames++ < 300) p.update(1 / 60, { fwd: 1, strafe: 0, run: false });
+  check('lands', !p.air, `frames=${frames}`);
+  check('on the floor below with the same gravity', p.up === PY && Math.abs(p.pos.y) < 1e-6 && p.pos.x > 10, `pos=${p.pos.toArray().map((v) => v.toFixed(2))}`);
+}
+
+console.log('a running jump up onto a ledge two voxels high');
+{
+  const voxel = (x, y, z) => (y < 0 || (x >= 6 && y < 2) ? SOLID : AIR);
+  const p = makePlayer(voxel, [3, 0, 0.5], PY, PX);
+  let jumped = false;
+  for (let i = 0; i < 120; i++) {
+    const jump = !jumped && p.pos.x > 4.6;
+    if (jump) jumped = true;
+    p.update(1 / 60, { fwd: 1, strafe: 0, run: false, jump });
+  }
+  check('stands on the ledge', !p.air && Math.abs(p.pos.y - 2) < 1e-6 && p.pos.x > 6, `pos=${p.pos.toArray().map((v) => v.toFixed(2))}`);
+}
+
+console.log('a low ceiling stops the jump');
+{
+  const voxel = (x, y, z) => (y < 0 || y >= 4 ? SOLID : AIR);
+  const p = makePlayer(voxel, [3, 0, 0.5], PY, PX);
+  let maxY = 0;
+  p.update(1 / 60, { fwd: 0, strafe: 0, run: false, jump: true });
+  for (let i = 0; i < 90; i++) { p.update(1 / 60, { fwd: 0, strafe: 0, run: false }); maxY = Math.max(maxY, p.pos.y); }
+  check('head never enters the ceiling', maxY + 3.5 <= 4 + 1e-6, `max feet ${maxY.toFixed(3)}`);
+  check('back on the floor', !p.air && Math.abs(p.pos.y) < 1e-6);
+}
+
+console.log('falling waits for a hall that is still being drawn');
+{
+  const UNKNOWN = 4;
+  let loaded = false;
+  const voxel = (x, y, z) => {
+    if (y >= 10 && y < 12 && x < 5) return SOLID;   // the platform we jump from
+    if (y < -20) return loaded ? (y < -30 ? SOLID : AIR) : UNKNOWN;
+    return AIR;
+  };
+  const p = makePlayer(voxel, [4.5, 12, 0.5], PY, PX);
+  p.update(1 / 60, { fwd: 1, strafe: 0, run: false, jump: true });
+  for (let i = 0; i < 150; i++) p.update(1 / 60, { fwd: i < 40 ? 1 : 0, strafe: 0, run: false });
+  check('hovers above the unknown hall', p.air && p.pos.y > -21, `y=${p.pos.y.toFixed(2)}`);
+  loaded = true;
+  for (let i = 0; i < 200 && p.air; i++) p.update(1 / 60, { fwd: 0, strafe: 0, run: false });
+  check('then lands once it exists', !p.air && Math.abs(p.pos.y + 30) < 1e-6, `y=${p.pos.y.toFixed(2)}`);
+}
+
+console.log('jumping into the void: the plate is redrawn at the jump spot');
+{
+  const voxel = (x, y, z) => (y < 0 && y >= -2 && x < 6 ? SOLID : AIR);
+  const p = makePlayer(voxel, [5, 0, 0.5], PY, PX);
+  let respawned = false;
+  p.onRespawn = () => { respawned = true; };
+  p.update(1 / 60, { fwd: 1, strafe: 0, run: false, jump: true });
+  for (let i = 0; i < 60 * 5 && !respawned; i++) p.update(1 / 60, { fwd: 1, strafe: 0, run: false });
+  check('redrawn after the fall', respawned && !p.air);
+  check('back where the jump began', Math.abs(p.pos.x - 5) < 1e-6 && Math.abs(p.pos.y) < 1e-6, `pos=${p.pos.toArray().map((v) => v.toFixed(2))}`);
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nall controller checks passed');
 process.exit(failures ? 1 : 0);

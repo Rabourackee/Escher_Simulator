@@ -44,13 +44,17 @@ export function insideOpening(op, u, v) {
     return du * du + dv * dv <= op.r * op.r;
   }
   const [a, h] = toLocal(op.base, u, v);
+  if (op.rect) {
+    const hh = h - (op.sill || 0);
+    return Math.abs(a - op.t) <= op.w / 2 && hh >= 0 && hh <= op.hs;
+  }
   return insideArch(a - op.t, h - (op.sill || 0), op.w, op.hs);
 }
 
 // Opening-local extents: along [a0, a1], up [h0, h1]
 export function localExtent(op) {
   const s = op.sill || 0;
-  return [op.t - op.w / 2, s, op.t + op.w / 2, s + op.hs + op.w / 2];
+  return [op.t - op.w / 2, s, op.t + op.w / 2, s + op.hs + (op.rect ? 0 : op.w / 2)];
 }
 
 // Axis-aligned box in wall coordinates [u0, v0, u1, v1]
@@ -80,6 +84,10 @@ export function openingFits(op) {
 export function archOutline(op, grow = 0, segments = 14) {
   const s = op.sill || 0;
   const r = op.w / 2 + grow;
+  if (op.rect) {
+    const top = s + op.hs + grow;
+    return [[op.t - r, s], [op.t + r, s], [op.t + r, top], [op.t - r, top]].map(([a, h]) => fromLocal(op.base, a, h));
+  }
   const pts = [];
   pts.push([op.t - r, s]);
   pts.push([op.t + r, s]);
@@ -104,6 +112,12 @@ export function circleOutline(op, grow = 0, segments = 28) {
 // An inverted-U band hugging an arch: the moulding drawn around doorways.
 export function archBand(op, inner, outer, segments = 14) {
   const s = op.sill || 0;
+  if (op.rect) {
+    // a square frame: the band is the outer outline with the opening cut out as a notch
+    const ri = op.w / 2 + inner, ro = op.w / 2 + outer, ti = s + op.hs + inner, to = s + op.hs + outer;
+    const pts = [[op.t - ro, s], [op.t - ri, s], [op.t - ri, ti], [op.t + ri, ti], [op.t + ri, s], [op.t + ro, s], [op.t + ro, to], [op.t - ro, to]];
+    return pts.map(([a, h]) => fromLocal(op.base, a, h));
+  }
   const ri = op.w / 2 + inner, ro = op.w / 2 + outer;
   const pts = [];
   pts.push([op.t - ro, s]);

@@ -26,6 +26,10 @@ export class OccVolume {
     this.lastBuild = -1e9;
   }
 
+  dispose() {
+    this.texture.dispose();
+  }
+
   markDirty(h) {
     const o = this.origin, S = this.S;
     const x = h.hx * HALL, y = h.hy * HALL, z = h.hz * HALL;

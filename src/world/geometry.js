@@ -104,16 +104,24 @@ export function cylinderGeom(A, B, r0, r1, segs = 8, caps = true) {
   return g;
 }
 
+// A lumpy ball (foliage); with no rng it is a plain sphere.
 export function blobGeom(c, r, rng, detail = 1) {
   const g = new THREE.IcosahedronGeometry(r, detail);
-  const p = g.attributes.position;
-  for (let i = 0; i < p.count; i++) {
-    const s = 0.82 + 0.3 * rng.next();
-    p.setXYZ(i, p.getX(i) * s, p.getY(i) * (0.8 + 0.25 * rng.next()), p.getZ(i) * s);
+  if (rng) {
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const s = 0.82 + 0.3 * rng.next();
+      p.setXYZ(i, p.getX(i) * s, p.getY(i) * (0.8 + 0.25 * rng.next()), p.getZ(i) * s);
+    }
   }
   g.computeVertexNormals();
   g.translate(c[0], c[1], c[2]);
   return g;
+}
+
+// Surface of revolution around +Y from a profile of [radius, height] pairs (bottom first).
+export function latheGeom(profile, segments = 12) {
+  return new THREE.LatheGeometry(profile.map(([r, y]) => new THREE.Vector2(r, y)), segments);
 }
 
 // Matrix that maps a 2D profile (x = p, y = q) extruded along z onto three chosen axes:
@@ -249,7 +257,7 @@ function addBars(sink, M, op) {
     const a = op.t - op.w / 2 + (op.w * i) / (n + 1);
     const dx = a - op.t;
     const r = op.w / 2;
-    const topH = s + op.hs + Math.sqrt(Math.max(0, r * r - dx * dx));
+    const topH = s + op.hs + (op.rect ? 0 : Math.sqrt(Math.max(0, r * r - dx * dx)));
     const p0 = fromLocal(op.base, a, s);
     const p1 = fromLocal(op.base, a, topH);
     sink.add(cylinderGeom([p0[0], p0[1], 1], [p1[0], p1[1], 1], 0.07, 0.07, 5), M, MAT.IRON);

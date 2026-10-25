@@ -10,7 +10,7 @@
 // over behave like invisible kerbs, so nobody ever falls into the void.
 
 import * as THREE from '../../vendor/three/three.module.min.js';
-import { AIR, SOLID, BARRIER, PLAYER, isWedge } from '../core/constants.js';
+import { AIR, SOLID, BARRIER, UNKNOWN, PLAYER, isWedge } from '../core/constants.js';
 import { DIRS, axisOf, signOf, dirFrom, wedgeDirs, referenceForward } from '../core/cube.js';
 
 const BLOCKED = 'blocked';
@@ -51,8 +51,15 @@ export class Player {
     this.bob = 0;
     this.moveAmt = 0;
     this.onTransition = null;
+    this.onLand = null;
+    this.onRespawn = null;
     this.camQ = new THREE.Quaternion();
     this.camP = new THREE.Vector3();
+    // airborne state: vertical speed along `up`, time in the air, where the jump began
+    this.air = false;
+    this.vy = 0;
+    this.airTime = 0;
+    this.safe = null;
   }
 
   // ---- frame helpers ----
@@ -86,12 +93,24 @@ export class Player {
     return out.copy(dirVec(this.up)).multiplyScalar(PLAYER.eye + this.bob).add(this.pos);
   }
 
-  // Place the walker at feet position p with the given up and facing directions.
+  // Place the walker at feet position p with the given up and facing directions. Nothing
+  // from an earlier walk carries over: no fall in progress, no half-made gravity change.
   spawn(p, up, faceVec) {
     this.pos.set(p[0], p[1], p[2]);
     this.up = up;
     this.yaw = this.yawFromForward(faceVec, up);
     this.pitch = 0;
+    this.air = false;
+    this.vy = 0;
+    this.airTime = 0;
+    this.safe = null;
+    this.push = 0;
+    this.pushAxis = -1;
+    this.ledge = 0;
+    this.cool = 0;
+    this.bobPhase = 0;
+    this.bob = 0;
+    this.moveAmt = 0;
     this.offQ.identity();
     this.offP.set(0, 0, 0);
     const g = this.groundAt([p[0], p[1], p[2]], up, this.height() + 0.6, this.height() - 1.2);
@@ -137,10 +156,9 @@ export class Player {
   }
 
   // Does the body (footprint radius r, from `from` above the feet to the head) hit anything?
-  bodyHits(p, up, t, from = PLAYER.stepUp) {
+  bodyHits(p, up, t, from = PLAYER.stepUp, r = PLAYER.radius) {
     const ua = axisOf(up), us = signOf(up);
     const h1 = (ua + 1) % 3, h2 = (ua + 2) % 3;
-    const r = PLAYER.radius;
     const hA = t + from, hB = t + PLAYER.height;
     const wLo = us > 0 ? hA : -hB, wHi = us > 0 ? hB : -hA;
     const a0 = Math.floor(p[h1] - r), a1 = Math.floor(p[h1] + r - EPS);
@@ -212,6 +230,13 @@ export class Player {
 
   update(dt, input) {
     this.cool = Math.max(0, this.cool - dt);
+    if (!this.air && input.jump) this.leaveGround(PLAYER.jump);
+    if (this.air) {
+      this.airUpdate(dt, input);
+      this.bob = 0;
+      this.updateCamera(dt);
+      return;
+    }
     const speed = input.run ? PLAYER.run : PLAYER.walk;
     const f = this.forward(new THREE.Vector3());
     const r = this.right(new THREE.Vector3());
@@ -258,8 +283,129 @@ export class Player {
     } else {
       this.ledge = 0;
     }
+    // The ground can vanish (a hall that was still being drawn turns out to be open).
+    if (!this.air) {
+      const t = this.height();
+      if (this.groundAt([this.pos.x, this.pos.y, this.pos.z], this.up, t + 0.05, t - 0.05) === null) this.leaveGround(0);
+    }
     this.bob = Math.sin(this.bobPhase) * 0.06 * this.moveAmt;
     this.updateCamera(dt);
+  }
+
+  // ---- jumping and falling ----
+  leaveGround(v) {
+    if (!this.air) {
+      this.safe = { pos: this.pos.clone(), up: this.up, yaw: this.yaw, pitch: this.pitch };
+    }
+    this.air = true;
+    this.vy = v;
+    this.airTime = 0;
+    this.push = 0;
+    this.ledge = 0;
+  }
+
+  airUpdate(dt, input) {
+    const up = this.up, ua = axisOf(up), us = signOf(up);
+    const speed = (input.run ? PLAYER.run : PLAYER.walk) * 0.85;
+    const wish = this.forward(new THREE.Vector3()).multiplyScalar(input.fwd).addScaledVector(this.right(new THREE.Vector3()), input.strafe);
+    const len = wish.length();
+    if (len > 1) wish.divideScalar(len);
+    if (len > 0.01) {
+      const axes = [(ua + 1) % 3, (ua + 2) % 3];
+      const total = speed * dt;
+      const steps = Math.max(1, Math.ceil(total / 0.16));
+      for (let s = 0; s < steps; s++) {
+        for (const ax of axes) {
+          const d = (wish.getComponent(ax) * total) / steps;
+          if (Math.abs(d) < 1e-7) continue;
+          const t = this.height();
+          const np = [this.pos.x, this.pos.y, this.pos.z];
+          np[ax] += d;
+          if (!this.bodyHits(np, up, t, 0.05, PLAYER.airRadius)) { this.pos.setComponent(ax, np[ax]); continue; }
+          // Mantle: a ledge whose top is within a step of the feet can be climbed onto.
+          if (this.bodyHits(np, up, t, PLAYER.stepUp, PLAYER.airRadius)) continue;
+          const probe = np.slice();
+          probe[ax] += Math.sign(d) * (PLAYER.airRadius + 0.06);
+          const g = this.groundAt(probe, up, t + PLAYER.stepUp, t);
+          if (typeof g === 'number' && !this.bodyHits(probe, up, g)) {
+            this.pos.set(probe[0], probe[1], probe[2]);
+            this.land(g);
+            return;
+          }
+        }
+      }
+    }
+    this.vy = Math.max(this.vy - PLAYER.gravity * dt, -PLAYER.terminal);
+    const dz = this.vy * dt;
+    const n = Math.max(1, Math.ceil(Math.abs(dz) / 0.3));
+    let waiting = false;
+    for (let i = 0; i < n; i++) {
+      const step = dz / n;
+      const t = this.height();
+      const p = [this.pos.x, this.pos.y, this.pos.z];
+      if (step > 0) {
+        if (this.bodyHits(p, up, t + step, 0.05, PLAYER.airRadius)) { this.vy = 0; break; }
+        this.setHeightOf(t + step);
+        continue;
+      }
+      // never fall into a hall that has not been drawn yet: wait for it
+      const q = p.slice(); q[ua] = us * (t + step - 0.2);
+      if (this.world.voxel(Math.floor(q[0]), Math.floor(q[1]), Math.floor(q[2])) === UNKNOWN) { this.vy = 0; waiting = true; break; }
+      const g = this.groundAt(p, up, t + 1e-4, t + step);
+      if (typeof g === 'number') { this.land(g); return; }
+      this.setHeightOf(t + step);
+    }
+    if (!waiting) this.airTime += dt;
+    if (this.airTime > PLAYER.maxFall && this.safe) this.respawn();
+  }
+
+  land(g) {
+    const impact = -this.vy;
+    this.air = false;
+    this.vy = 0;
+    this.setHeightOf(g);
+    if (!this.depenetrate()) {
+      // landed somewhere too narrow to stand: redraw the plate at the jump spot
+      if (this.safe) this.respawn();
+      return;
+    }
+    this.offP.addScaledVector(dirVec(this.up), -Math.min(0.45, impact * 0.018));
+    this.cool = Math.max(this.cool, 0.15);
+    if (this.onLand) this.onLand(impact);
+  }
+
+  // After a landing the slimmer airborne body may overlap a wall: nudge it free.
+  // Returns false if there is no free place to stand nearby.
+  depenetrate() {
+    const up = this.up, t = this.height();
+    const p0 = [this.pos.x, this.pos.y, this.pos.z];
+    if (!this.bodyHits(p0, up, t)) return true;
+    const ua = axisOf(up), h1 = (ua + 1) % 3, h2 = (ua + 2) % 3;
+    for (let d = 0.1; d <= 1.25; d += 0.1) {
+      for (let k = 0; k < 16; k++) {
+        const ang = (k / 16) * Math.PI * 2;
+        const q = p0.slice(); q[h1] += Math.cos(ang) * d; q[h2] += Math.sin(ang) * d;
+        const g = this.groundAt(q, up, t + PLAYER.stepUp, t - PLAYER.stepDown);
+        if (typeof g !== 'number' || this.bodyHits(q, up, g)) continue;
+        this.pos.set(q[0], q[1], q[2]);
+        this.setHeightOf(g);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  respawn() {
+    const s = this.safe;
+    this.air = false;
+    this.vy = 0;
+    this.pos.copy(s.pos);
+    this.up = s.up;
+    this.yaw = s.yaw;
+    this.pitch = s.pitch;
+    this.offQ.identity();
+    this.offP.set(0, 0, 0);
+    if (this.onRespawn) this.onRespawn();
   }
 
   // Walked into a wall: the wall becomes the floor.

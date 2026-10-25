@@ -4,8 +4,8 @@ import * as THREE from '../vendor/three/three.module.min.js';
 import { HALL, setSeed } from './core/constants.js';
 import { DIRS, DIR_NAMES } from './core/cube.js';
 import { EtchRenderer, createEtchMaterial, LIGHT_DIR } from './render/etch.js';
-import { Figure, Walkers, frameQuaternion } from './render/figures.js';
-import { World } from './world/world.js';
+import { Figure, Walkers, frameQuaternion, disposeFigureAssets } from './render/figures.js';
+import { World, boxDist } from './world/world.js';
 import { OccVolume } from './render/occlusion.js';
 import { Player } from './player/controller.js';
 import { Input } from './player/input.js';
@@ -16,8 +16,9 @@ if (params.has('seed')) setSeed(Number(params.get('seed')) >>> 0);
 if (params.has('shot')) document.body.classList.add('shot');
 const vec3Param = (name) => (params.has(name) ? params.get(name).split(',').map(Number) : null);
 if (vec3Param('cam')) START.camera.pos = vec3Param('cam');
-if (vec3Param('look')) START.camera.target = vec3Param('look');
-if (params.has('fov')) START.camera.fov = Number(params.get('fov'));
+// ?frame: the print fills the window exactly (for comparing renders with the print)
+const FRAME_ONLY = params.has('frame');
+if (FRAME_ONLY) document.body.classList.add('frame');
 
 const WALK_FOG = [22, 64];
 const INTRO_FOG = START.fog;
@@ -44,12 +45,15 @@ const shared = {
   uOccOn: { value: params.has('noao') ? 0 : 1 },
   uShadowAmt: { value: params.has('shadows') ? 1 : 0 },
   uFogFar: { value: 1000 },
+  uDensity: { value: 0.18 },
+  uHatchOn: { value: params.has('outline') ? 0 : 1 },
 };
-const material = createEtchMaterial(shared);
+const hallMaterial = createEtchMaterial(shared, { packed: true });
+const walkerMaterial = createEtchMaterial(shared);
 
-const walkers = new Walkers(scene, material);
+const walkers = new Walkers(scene, walkerMaterial);
 let occ = null;
-const world = new World(scene, material, {
+const world = new World(scene, hallMaterial, {
   onLoad: (h) => {
     if (h.npcs && h.npcs.length) walkers.addHall(h.key, h.npcs);
     if (occ) occ.markDirty(h);
@@ -115,20 +119,69 @@ function setGravityLabel(up, flash) {
   }
 }
 player.onTransition = (_, up) => setGravityLabel(up, true);
+// a fall that finds no ground: the plate is redrawn at the spot of the jump
+player.onRespawn = () => { fade = 0.15; setGravityLabel(player.up, true); };
 
 // ---------------------------------------------------------------- state
 let mode = 'loading';
 let entering = null;
 let hovered = null;
-let introParallax = new THREE.Vector2();
 let mouseNdc = new THREE.Vector2(0, 0);
-const focus = new THREE.Vector3(...START.focus);
+const PRINT_FOCUS = new THREE.Vector3(...START.focus);
+const focus = PRINT_FOCUS.clone();
+const focusArr = [0, 0, 0];
 let radius = INTRO_RADIUS;
+let keepHalls = false;   // true while flying back to the print: nothing is dropped mid-flight
 let fade = 0;
 const fog = [INTRO_FOG[0], INTRO_FOG[1]];
-const introPos = new THREE.Vector3(...START.camera.pos);
-const introTarget = new THREE.Vector3(...START.camera.target);
 let current = null;
+
+// The print's own camera, recovered from its vanishing points: fixed, it never moves.
+const PRINT_POS = new THREE.Vector3(...START.camera.pos);
+const PRINT_QUAT = (() => {
+  const f = new THREE.Vector3(...START.camera.forward).normalize();
+  const u = new THREE.Vector3(...START.camera.up).normalize();
+  const r = new THREE.Vector3().crossVectors(f, u).normalize();
+  u.crossVectors(r, f);
+  return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(r, u, f.clone().negate()));
+})();
+
+// The title shows the scene as a print on a page, at the print's own proportions;
+// walking fills the screen. viewK runs from 0 (print) to 1 (full screen) while the
+// camera dives into a figure.
+const INTRO_FOV = START.camera.fov;
+const PRINT_ASPECT = START.camera.aspect;
+const WALK_FOV = 68;
+let viewK = 0;
+const printRect = { x: 0, y: 0, w: 1, h: 1 };
+const viewRect = { x: 0, y: 0, w: 1, h: 1 };
+const plateEl = document.getElementById('plate');
+
+function layoutPrint() {
+  const W = innerWidth, H = innerHeight;
+  if (FRAME_ONLY) { Object.assign(printRect, { x: 0, y: 0, w: W, h: H }); return; }
+  const cap = W < 640 ? 96 : 118;
+  const h = Math.max(150, Math.floor(Math.min((W - 32) / PRINT_ASPECT, (H - cap - 24) * 0.98, 1050)));
+  printRect.h = h;
+  printRect.w = Math.round(h * PRINT_ASPECT);
+  printRect.x = Math.floor((W - printRect.w) / 2);
+  printRect.y = Math.max(12, Math.floor((H - h - cap) / 2));
+}
+
+function updateViewRect() {
+  const k = viewK;
+  viewRect.x = printRect.x * (1 - k);
+  viewRect.y = printRect.y * (1 - k);
+  viewRect.w = printRect.w + (innerWidth - printRect.w) * k;
+  viewRect.h = printRect.h + (innerHeight - printRect.h) * k;
+  const m = 18;
+  plateEl.style.left = `${printRect.x - m}px`;
+  plateEl.style.top = `${printRect.y - m}px`;
+  plateEl.style.width = `${printRect.w + 2 * m}px`;
+  plateEl.style.height = `${printRect.h + 2 * m}px`;
+  ui.intro.style.top = `${printRect.y + printRect.h + 14}px`;
+  ui.intro.style.width = `${Math.min(printRect.w, 720)}px`;
+}
 
 function setMode(m) {
   mode = m;
@@ -142,14 +195,8 @@ function setMode(m) {
 setMode('loading');
 
 function introCamera(out = camera) {
-  const p = introPos.clone();
-  const t = introTarget.clone();
-  const dir = t.clone().sub(p);
-  const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
-  p.addScaledVector(right, introParallax.x * 1.6).add(new THREE.Vector3(0, introParallax.y * 1.2, 0));
-  out.position.copy(p);
-  out.up.set(0, 1, 0);
-  out.lookAt(t);
+  out.position.copy(PRINT_POS);
+  out.quaternion.copy(PRINT_QUAT);
 }
 
 function setHover(f) {
@@ -169,17 +216,17 @@ function pick() {
   return hits.length ? hits[0].object.userData.f : null;
 }
 
+const insideView = (e) => e.clientX >= viewRect.x && e.clientY >= viewRect.y &&
+  e.clientX < viewRect.x + viewRect.w && e.clientY < viewRect.y + viewRect.h;
+
 canvas.addEventListener('mousemove', (e) => {
-  mouseNdc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-  if (mode === 'intro') {
-    introParallax.set(mouseNdc.x, mouseNdc.y);
-    setHover(pick());
-  }
+  mouseNdc.set(((e.clientX - viewRect.x) / viewRect.w) * 2 - 1, -((e.clientY - viewRect.y) / viewRect.h) * 2 + 1);
+  if (mode === 'intro') setHover(insideView(e) ? pick() : null);
 });
 
-canvas.addEventListener('click', () => {
+canvas.addEventListener('click', (e) => {
   if (mode === 'intro') {
-    const f = pick();
+    const f = insideView(e) ? pick() : null;
     if (f) beginEnter(f);
   } else if ((mode === 'walk' || mode === 'pause') && !input.locked && !dragLook) {
     input.lock();
@@ -215,11 +262,14 @@ input.onKey = (code) => {
 
 function smoother(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
 
+// The start of a walk: the walker starts from rest, with no keys or mouse movement left
+// over from before.
 function beginEnter(f) {
   current = f;
+  input.reset();
   input.lock();
   const face = new THREE.Vector3(...DIRS[f.def.face]);
-  player.spawn(f.def.pos, f.def.up, face);
+  player.spawn(f.def.stand ?? f.def.pos, f.def.up, face);
   setGravityLabel(f.def.up, false);
   entering = {
     f, t: 0, dur: 2.8,
@@ -230,15 +280,29 @@ function beginEnter(f) {
   setMode('enter');
 }
 
+// The end of a walk. The print's halls are requested at once (none are generated along
+// the flight back), and on arrival everything else the walk loaded is dropped and the
+// generator's caches are emptied.
 function returnToPrint() {
   input.unlock();
+  input.reset();
   entering = {
     back: true, t: 0, dur: 2.4,
     fromP: camera.position.clone(), fromQ: camera.quaternion.clone(),
     fromFog: fog.slice(),
   };
+  focus.copy(PRINT_FOCUS);
+  radius = INTRO_RADIUS;
+  keepHalls = true;
   if (current) current.fig.mesh.visible = true;
   setMode('enter');
+}
+
+// Keep exactly the halls a fresh start would load for the print, nothing more.
+function releaseWalk() {
+  keepHalls = false;
+  const p = [PRINT_FOCUS.x, PRINT_FOCUS.y, PRINT_FOCUS.z];
+  world.release((h) => boxDist(p, h.hx, h.hy, h.hz) <= INTRO_RADIUS);
 }
 
 function tickEnter(dt) {
@@ -246,24 +310,28 @@ function tickEnter(dt) {
   E.t = Math.min(1, E.t + dt / E.dur);
   const e = smoother(E.t);
   if (E.back) {
-    const tmp = new THREE.PerspectiveCamera();
-    introCamera(tmp);
-    camera.position.lerpVectors(E.fromP, tmp.position, e);
-    camera.quaternion.slerpQuaternions(E.fromQ, tmp.quaternion, e);
+    viewK = 1 - e;
+    camera.position.lerpVectors(E.fromP, PRINT_POS, e);
+    camera.quaternion.slerpQuaternions(E.fromQ, PRINT_QUAT, e);
     fog[0] = THREE.MathUtils.lerp(E.fromFog[0], INTRO_FOG[0], e);
     fog[1] = THREE.MathUtils.lerp(E.fromFog[1], INTRO_FOG[1], e);
-    focus.lerp(new THREE.Vector3(...START.focus), e);
-    radius = THREE.MathUtils.lerp(WALK_RADIUS, INTRO_RADIUS, e);
-    if (E.t >= 1) { entering = null; current = null; setMode('intro'); }
+    if (E.t >= 1) {
+      entering = null;
+      current = null;
+      releaseWalk();
+      setMode('intro');
+    }
     return;
   }
-  // A slight arc so the camera dives into the figure rather than sliding sideways.
+  // The print grows to fill the screen a little ahead of the camera, which arcs slightly so
+  // it dives into the figure rather than sliding sideways.
+  viewK = smoother(Math.min(1, E.t * 1.35));
   const lift = Math.sin(Math.PI * e) * 2.5;
   camera.position.lerpVectors(E.fromP, E.toP, e).addScaledVector(E.f.U, lift);
   camera.quaternion.slerpQuaternions(E.fromQ, E.toQ, e);
   fog[0] = THREE.MathUtils.lerp(E.fromFog[0], WALK_FOG[0], e);
   fog[1] = THREE.MathUtils.lerp(E.fromFog[1], WALK_FOG[1], e);
-  focus.lerpVectors(new THREE.Vector3(...START.focus), player.pos, e);
+  focus.lerpVectors(PRINT_FOCUS, player.pos, e);
   radius = THREE.MathUtils.lerp(INTRO_RADIUS, WALK_RADIUS, e);
   if (E.t > 0.9) E.f.fig.mesh.visible = false;
   if (E.t >= 1) {
@@ -315,35 +383,54 @@ function resize() {
   renderer.setPixelRatio(quality.scale);
   renderer.setSize(innerWidth, innerHeight, false);
   etch.setSize(innerWidth, innerHeight, quality.scale);
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
+  layoutPrint();
+  updateViewRect();
 }
 window.addEventListener('resize', resize);
 resize();
 
+// Point the camera's projection at the current image rectangle and hand the renderer
+// that rectangle in device pixels.
+const deviceRect = { x: 0, y: 0, w: 1, h: 1 };
+function applyView() {
+  updateViewRect();
+  camera.aspect = viewRect.w / viewRect.h;
+  camera.fov = INTRO_FOV + (WALK_FOV - INTRO_FOV) * viewK;
+  camera.updateProjectionMatrix();
+  const s = renderer.getPixelRatio();
+  const W = Math.floor(innerWidth * s), H = Math.floor(innerHeight * s);
+  deviceRect.x = Math.round(viewRect.x * s);
+  deviceRect.w = Math.min(W - deviceRect.x, Math.round(viewRect.w * s));
+  deviceRect.h = Math.min(H, Math.round(viewRect.h * s));
+  deviceRect.y = Math.max(0, H - Math.round(viewRect.y * s) - deviceRect.h);
+  etch.post.uniforms.uPlate.value = FRAME_ONLY ? 0 : 1 - viewK;
+  plateEl.style.opacity = String(FRAME_ONLY ? 0 : Math.max(0, 1 - viewK * 3));
+  // the print is engraved finer than the world you walk in
+  shared.uDensity.value = 0.3 + (0.18 - 0.3) * viewK;
+}
+
 // Halls lying wholly beyond the fog are not drawn at all.
+const camArr = [0, 0, 0];
 function cullHalls() {
-  const c = camera.position;
+  camArr[0] = camera.position.x; camArr[1] = camera.position.y; camArr[2] = camera.position.z;
   const lim = fog[1] + 2;
   for (const h of world.halls.values()) {
-    if (!h.mesh) continue;
-    let d2 = 0;
-    const b = [h.hx * HALL, h.hy * HALL, h.hz * HALL];
-    const p = [c.x, c.y, c.z];
-    for (let i = 0; i < 3; i++) {
-      if (p[i] < b[i]) d2 += (b[i] - p[i]) ** 2;
-      else if (p[i] > b[i] + HALL) d2 += (p[i] - b[i] - HALL) ** 2;
-    }
-    h.mesh.visible = d2 < lim * lim;
+    if (h.mesh) h.mesh.visible = boxDist(camArr, h.hx, h.hy, h.hz) < lim;
   }
 }
 
 let last = performance.now();
 const occCenter = new THREE.Vector3();
+const labelAt = new THREE.Vector3();
+let rafId = 0;
+let stopped = false;
+let contextLost = false;
 
 function frame(now) {
+  rafId = requestAnimationFrame(frame);
   const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
   last = now;
+  if (contextLost) return;
 
   if (mode === 'loading') {
     introCamera();
@@ -354,9 +441,9 @@ function frame(now) {
   } else if (mode === 'intro') {
     introCamera();
     if (hovered) {
-      const head = new THREE.Vector3(...hovered.def.pos).addScaledVector(hovered.U, 3.9).project(camera);
-      ui.label.style.left = `${(head.x * 0.5 + 0.5) * innerWidth}px`;
-      ui.label.style.top = `${(-head.y * 0.5 + 0.5) * innerHeight}px`;
+      const head = labelAt.set(...hovered.def.pos).addScaledVector(hovered.U, 3.9).project(camera);
+      ui.label.style.left = `${viewRect.x + (head.x * 0.5 + 0.5) * viewRect.w}px`;
+      ui.label.style.top = `${viewRect.y + (-head.y * 0.5 + 0.5) * viewRect.h}px`;
     }
   } else if (mode === 'enter') {
     tickEnter(dt);
@@ -369,27 +456,72 @@ function frame(now) {
     focus.copy(player.pos);
   } else if (mode === 'pause') {
     input.takeMouse();
+    input.axes();
     player.updateCamera(dt);
     camera.position.copy(player.camP);
     camera.quaternion.copy(player.camQ);
   }
+  applyView();
 
   fade = Math.min(1, fade + dt * (mode === 'loading' ? 0 : 0.7));
   etch.post.uniforms.uFade.value = smoother(fade);
   etch.setFog(fog[0], fog[1]);
   shared.uFogFar.value = fog[1] + 1;
-  world.update([focus.x, focus.y, focus.z], radius);
+  focusArr[0] = focus.x; focusArr[1] = focus.y; focusArr[2] = focus.z;
+  world.update(focusArr, radius, { unload: !keepHalls, now });
   world.tickSync();
   walkers.update(dt, camera.position, fog[1] + 12);
   occCenter.copy(mode === 'walk' || mode === 'pause' ? player.pos : focus);
   occ.update(occCenter, now);
   shared.uOccOrigin.value.copy(occ.origin);
   cullHalls();
-  etch.render(scene, camera);
+  etch.render(scene, camera, deviceRect);
   adaptQuality(dt, now);
-  requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+rafId = requestAnimationFrame(frame);
+
+// ---------------------------------------------------------------- the end of a visit
+// When the page goes away everything is handed back at once: the generation worker
+// stops, every hall, figure, texture and buffer is freed and the graphics context is
+// released, so nothing lingers, not even if the browser keeps the page in its
+// back/forward cache. A page brought back from that cache starts over from scratch.
+function shutdown() {
+  if (stopped) return;
+  stopped = true;
+  cancelAnimationFrame(rafId);
+  input.unlock();
+  world.dispose();
+  walkers.dispose();
+  for (const f of figures) {
+    scene.remove(f.fig.mesh);
+    f.fig.dispose();
+    f.mat.dispose();
+    f.proxy.geometry.dispose();
+  }
+  disposeFigureAssets();
+  hallMaterial.dispose();
+  walkerMaterial.dispose();
+  occ.dispose();
+  etch.dispose();
+  renderer.dispose();
+  renderer.forceContextLoss();
+  delete window.__escher;
+}
+window.addEventListener('pagehide', shutdown);
+window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload(); });
+
+// If the graphics card resets, the halls (whose meshes live only on the card) are
+// generated again once the context is back.
+canvas.addEventListener('webglcontextlost', (e) => {
+  if (stopped) return;
+  e.preventDefault();
+  contextLost = true;
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  contextLost = false;
+  world.release();
+  occ.dirty = true;
+});
 
 // Debug / automation hooks (used by the screenshot scripts).
 window.__escher = {
@@ -397,11 +529,14 @@ window.__escher = {
   get mode() { return mode; },
   setMode,
   enter: (i) => beginEnter(figures[i]),
+  back: () => returnToPrint(),
+  shutdown,
   spawn(p, up, face) {
     player.spawn(p, up, new THREE.Vector3(...DIRS[face]));
     focus.copy(player.pos);
     radius = WALK_RADIUS;
     fog[0] = WALK_FOG[0]; fog[1] = WALK_FOG[1];
+    viewK = 1;
     setGravityLabel(up, false);
     setMode('walk');
   },

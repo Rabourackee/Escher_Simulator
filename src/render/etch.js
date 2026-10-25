@@ -41,7 +41,11 @@ void main() {
   wp = modelMatrix * wp;
   vWorldPos = wp.xyz;
   vWorldNormal = normalize(inverseTransformDirection(transformedNormal, viewMatrix));
+  #ifdef PACKED
+  vMat = aMat * 32767.0;   // hall meshes store the id in a normalized 16-bit number
+  #else
   vMat = aMat;
+  #endif
   vViewZ = -mvPosition.z;
 }
 `;
@@ -57,6 +61,8 @@ uniform float uOccInv;
 uniform float uOccOn;
 uniform float uShadowAmt;
 uniform float uFogFar;
+uniform float uDensity;   // line periods per pixel the hatching aims for
+uniform float uHatchOn;   // 0 draws outlines only (a debugging aid)
 uniform float uHighlight;
 uniform float uMatOverride;
 varying vec3 vWorldPos;
@@ -93,7 +99,7 @@ float vnoise(vec2 p) {
 // pixel. Like an engraving, the line density stays roughly constant on the paper: when
 // lines crowd together the period doubles, when you walk up close it halves.
 float family(float x, float w, float fw) {
-  float lod = clamp(log2(max(fw, 1e-6) / 0.18), -6.0, 3.0);
+  float lod = clamp(log2(max(fw, 1e-6) / uDensity), -6.0, 3.0);
   float l0 = floor(lod), t = lod - l0;
   float s = exp2(-l0);
   float i0 = lineInk(x * s, w, fw * s);
@@ -123,7 +129,9 @@ float hatch(vec2 p, vec2 dx, vec2 dy, float dark, float ang, float sp, float wob
   return ink;
 }
 
+// A thin engraved joint; never wider than about two pixels however close you stand.
 float joint(float d, float hw, float fw) {
+  hw = min(hw, fw * 0.9);
   return 1.0 - smoothstep(hw - fw, hw + fw, d);
 }
 
@@ -228,14 +236,16 @@ void main() {
     pat = max(pat, st * 0.8);
   }
   ink = max(ink, pat * (0.3 + 0.25 * dark));
-  gl_FragColor = vec4(1.0 - clamp(ink, 0.0, 1.0), vViewZ, ncode, m / 16.0 + 0.01);
+  gl_FragColor = vec4(1.0 - clamp(ink, 0.0, 1.0) * uHatchOn, vViewZ, ncode, m / 16.0 + 0.01);
 }
 `;
 
-export function createEtchMaterial(shared) {
+// `packed`: for the hall meshes, which store positions, normals and material ids compactly.
+export function createEtchMaterial(shared, { packed = false } = {}) {
   return new THREE.ShaderMaterial({
     vertexShader: ETCH_VERT,
     fragmentShader: ETCH_FRAG,
+    defines: packed ? { PACKED: '' } : {},
     uniforms: {
       uLightDir: shared.uLightDir,
       uAmbient: shared.uAmbient,
@@ -245,6 +255,8 @@ export function createEtchMaterial(shared) {
       uOccOn: shared.uOccOn,
       uShadowAmt: shared.uShadowAmt,
       uFogFar: shared.uFogFar,
+      uDensity: shared.uDensity,
+      uHatchOn: shared.uHatchOn,
       uHighlight: { value: 0 },
       uMatOverride: { value: -1 },
     },
@@ -266,6 +278,8 @@ uniform float uFogNear;
 uniform float uFogFar;
 uniform float uVignette;
 uniform float uFade;
+uniform vec4 uRect;      // the image, in device pixels from the bottom left
+uniform float uPlate;    // 1 while the image is shown as a print on the page
 varying vec2 vUv;
 
 float hash12(vec2 p) {
@@ -279,13 +293,32 @@ float vnoise(vec2 p) {
   return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + 1.0), f.x), f.y);
 }
 
+vec3 paperAt(vec2 fc) {
+  float grain = vnoise(fc * 0.85) * 0.55 + vnoise(fc * 0.11) * 0.3 + vnoise(fc * 0.013) * 0.15;
+  return uPaper * (0.955 + 0.06 * grain);
+}
+
 void main() {
+  vec2 fc = gl_FragCoord.xy;
+  vec2 rmin = uRect.xy, rmax = uRect.xy + uRect.zw;
+  if (fc.x < rmin.x || fc.y < rmin.y || fc.x >= rmax.x || fc.y >= rmax.y) {
+    // the page around the print: a faint plate mark pressed into the paper
+    vec3 paper = paperAt(fc);
+    float m = 16.0 * uLine;
+    vec2 dOut = max(rmin - m - fc, fc - rmax - m);
+    float inPlate = step(max(dOut.x, dOut.y), 0.0);
+    float rim = 1.0 - smoothstep(0.0, 1.6 * uLine, abs(max(dOut.x, dOut.y)));
+    paper *= 1.0 - uPlate * (0.018 * inPlate + 0.07 * rim);
+    gl_FragColor = vec4(paper, 1.0);
+    return;
+  }
+  vec2 lo = (rmin + 0.5) * uTexel, hi = (rmax - 0.5) * uTexel;
   vec2 o = uTexel * uLine;
   vec4 c = texture2D(tMain, vUv);
-  vec4 l = texture2D(tMain, vUv - vec2(o.x, 0.0));
-  vec4 r = texture2D(tMain, vUv + vec2(o.x, 0.0));
-  vec4 d = texture2D(tMain, vUv - vec2(0.0, o.y));
-  vec4 u = texture2D(tMain, vUv + vec2(0.0, o.y));
+  vec4 l = texture2D(tMain, clamp(vUv - vec2(o.x, 0.0), lo, hi));
+  vec4 r = texture2D(tMain, clamp(vUv + vec2(o.x, 0.0), lo, hi));
+  vec4 d = texture2D(tMain, clamp(vUv - vec2(0.0, o.y), lo, hi));
+  vec4 u = texture2D(tMain, clamp(vUv + vec2(0.0, o.y), lo, hi));
 
   float iz = 1.0 / max(c.g, 0.01);
   float lx = abs(1.0 / max(l.g, 0.01) + 1.0 / max(r.g, 0.01) - 2.0 * iz);
@@ -303,14 +336,16 @@ void main() {
   float ink = (1.0 - c.r) * (1.0 - fogC);
   ink = max(ink, edge * 0.95 * (1.0 - fogE));
 
-  vec2 fc = gl_FragCoord.xy;
-  float grain = vnoise(fc * 0.85) * 0.55 + vnoise(fc * 0.11) * 0.3 + vnoise(fc * 0.013) * 0.15;
-  vec3 paper = uPaper * (0.955 + 0.06 * grain);
+  vec3 paper = paperAt(fc);
   float inkVar = 0.86 + 0.14 * vnoise(fc * 0.37 + 7.0);
   vec3 col = mix(paper, uInk, clamp(ink * inkVar, 0.0, 1.0));
-  vec2 q = vUv - 0.5;
+  vec2 q = (fc - rmin) / uRect.zw - 0.5;
   col *= 1.0 - uVignette * dot(q, q);
   col = mix(paper, col, uFade);
+  // the inked border of the image while it is still a print
+  vec2 e = min(fc - rmin, rmax - fc);
+  float border = 1.0 - smoothstep(0.6 * uLine, 1.8 * uLine, min(e.x, e.y));
+  col = mix(col, uInk, border * uPlate * 0.85);
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -344,9 +379,12 @@ export class EtchRenderer {
         uFogFar: { value: 70 },
         uVignette: { value: 0.55 },
         uFade: { value: 1 },
+        uRect: { value: new THREE.Vector4(0, 0, 1, 1) },
+        uPlate: { value: 0 },
       },
     });
     const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.post);
+    this.quad = quad;
     quad.frustumCulled = false;
     this.postScene = new THREE.Scene();
     this.postScene.add(quad);
@@ -360,6 +398,12 @@ export class EtchRenderer {
     this.post.uniforms.uLine.value = Math.max(1, dpr * 0.9);
   }
 
+  dispose() {
+    this.rt.dispose();
+    this.post.dispose();
+    this.quad.geometry.dispose();
+  }
+
   setSamples(n) {
     if (this.rt.samples === n) return;
     this.rt.samples = n;
@@ -371,9 +415,15 @@ export class EtchRenderer {
     this.post.uniforms.uFogFar.value = far;
   }
 
-  render(scene, camera) {
+  // rect: the part of the canvas showing the image, in device pixels from the bottom left
+  render(scene, camera, rect = { x: 0, y: 0, w: this.rt.width, h: this.rt.height }) {
     const r = this.renderer;
-    r.setRenderTarget(this.rt);
+    const rt = this.rt;
+    rt.viewport.set(rect.x, rect.y, rect.w, rect.h);
+    rt.scissor.set(rect.x, rect.y, rect.w, rect.h);
+    rt.scissorTest = true;
+    this.post.uniforms.uRect.value.set(rect.x, rect.y, rect.w, rect.h);
+    r.setRenderTarget(rt);
     r.setClearColor(this.clearColor, 1);
     r.clear(true, true, false);
     r.render(scene, camera);

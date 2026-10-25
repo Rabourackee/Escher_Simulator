@@ -9,8 +9,10 @@ export class Input {
     this.locked = false;
     this.onLockChange = null;
     this.onKey = null;
+    this.jumpQueued = false;
     window.addEventListener('keydown', (e) => {
       if (!this.keys.has(e.code) && this.onKey) this.onKey(e.code, e);
+      if (e.code === 'Space' && !e.repeat) this.jumpQueued = true;
       this.keys.add(e.code);
       if (this.locked && ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
     });
@@ -47,7 +49,16 @@ export class Input {
     const k = this.keys;
     const fwd = (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
     const strafe = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
-    return { fwd, strafe, run: k.has('ShiftLeft') || k.has('ShiftRight') };
+    const jump = this.jumpQueued;
+    this.jumpQueued = false;
+    return { fwd, strafe, run: k.has('ShiftLeft') || k.has('ShiftRight'), jump };
+  }
+
+  // Forget mouse movement and a jump pressed before now (a walk starts clean).
+  reset() {
+    this.dx = 0;
+    this.dy = 0;
+    this.jumpQueued = false;
   }
 
   takeMouse() {
