@@ -14,17 +14,19 @@ risers. Everything beyond the three halls of the print is generated as you appro
 
 ## Running it
 
-It is a static site with no build step. ES modules need to be served over HTTP, so from
-the repository folder run any static server, for example:
+It is a static site with no build step. ES modules need to be served over HTTP. From the
+repository folder:
 
 ```sh
-python -m http.server 8000
-# or
-npx serve .
+python serve.py
 ```
 
-Then open <http://localhost:8000>. It needs a browser with WebGL 2 (current Chrome, Edge,
-Firefox or Safari) and a keyboard and mouse. It also works as-is on GitHub Pages.
+That starts a local server and opens the game in your browser. Press Ctrl+C or close the
+terminal to stop. You can also run any other static server, for example
+`python -m http.server 8000` or `npx serve .`, then open <http://localhost:8000>.
+
+It needs a browser with WebGL 2 (current Chrome, Edge, Firefox or Safari) and a keyboard
+and mouse. It also works as-is on GitHub Pages.
 
 ## Controls
 
