@@ -389,7 +389,10 @@ export function pier(rot, rng, o = {}) {
       s.add(boxGeom(px - 0.22, 1, pz - 0.22, px + sx + 0.22, 1.8, pz + sz + 0.22), IDM, MAT.TRIM);
     }
     if (!full) {
-      s.add(boxGeom(px - 0.3, H + 0.55, pz - 0.3, px + sx + 0.3, 1 + H, pz + sz + 0.3), IDM, MAT.TRIM);
+      // Stop short of the roof. Flush with the stone, this coping redraws the whole
+      // top, and stone and trim hatch differently, so the surface flickers.
+      const roof = 1 + H;
+      s.add(boxGeom(px - 0.3, roof - 0.45, pz - 0.3, px + sx + 0.3, roof - 0.08, pz + sz + 0.3), IDM, MAT.TRIM);
     }
     // string courses on the tall ones
     for (let y = 13; y < H - 2; y += 13) {
@@ -490,7 +493,11 @@ export function arcadeWall(rot, rng, o = {}) {
       const g2 = prismGeom(band, 0.16); g2.translate(0, 0, 2);
       s.add(g2, M, MAT.TRIM);
     }
-    if (H < LAST - 1) s.add(boxGeom(xp - 0.25, H + 0.6, z0 - 0.25, xp + 2.25, 1 + H, zEnd + 0.25), IDM, MAT.TRIM);
+    if (H < LAST - 1) {
+      // Below the walking surface, same as a pier coping. Flush trim reprints the top.
+      const roof = 1 + H;
+      s.add(boxGeom(xp - 0.25, roof - 0.4, z0 - 0.25, xp + 2.25, roof - 0.08, zEnd + 0.25), IDM, MAT.TRIM);
+    }
   };
   return P;
 }
